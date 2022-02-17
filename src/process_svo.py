@@ -1,20 +1,13 @@
 import enum
-import pathlib
-import sys
+import os
 
 import cv2
 import numpy as np
 import open3d as o3d
 import pyzed.sl as sl
 
-from .displayer import Displayer
-
-_parentdir = pathlib.Path("../mmdetection/").parent.parent.resolve()
-sys.path.insert(0, str(_parentdir))
-# trunk-ignore(flake8/E402)
-from mmdetection.mmdet.apis import inference_detector, init_detector
-
-sys.path.remove(str(_parentdir))
+from .custom_model.model import Model
+from .view.frame_viewer import Displayer
 
 
 class Resolution(enum.Enum):
@@ -72,11 +65,7 @@ class SVO(object):
         self.fps = fps
 
         # Start custom model
-        if custom_model is not None:
-            self.custom_model = init_detector(
-                custom_model["config"], custom_model["check_pnt"], device="cuda:0"
-            )
-            self.classes = self.custom_model.CLASSES
+        self.model = Model(custom_model)
 
         # Configure and open camera
         self.init_params = sl.InitParameters()
@@ -104,7 +93,7 @@ class SVO(object):
             self.mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.HIGH)
         )
         self.mapping_parameters.range_meter = self.mapping_parameters.get_range_preset(
-            sl.MAPPING_RANGE.MEDIUM
+            sl.MAPPING_RANGE.LONG
         )
         self.mapping_parameters.max_memory_usage = 6000  # 6GB
         self.mapping_parameters.map_type = sl.SPATIAL_MAP_TYPE.FUSED_POINT_CLOUD
@@ -127,7 +116,7 @@ class SVO(object):
             print("Rastreamento de posição iniciado!")
             self.tracking_enabled = True
 
-    def start_detection(self, custom: bool = False) -> None:
+    def start_detection(self, custom: bool = False, threshold: float = 0.8) -> None:
         """Configure and starts object detection"""
         self.objects = {}
         self.detection_parameters = sl.ObjectDetectionParameters()
@@ -139,7 +128,7 @@ class SVO(object):
             else sl.DETECTION_MODEL.MULTI_CLASS_BOX
         )
         self.detection_parameters_rt = sl.ObjectDetectionRuntimeParameters()
-        self.detection_parameters_rt.detection_confidence_threshold = 80
+        self.detection_parameters_rt.detection_confidence_threshold = threshold
         err = self.zed.enable_object_detection(self.detection_parameters)
         if err != sl.ERROR_CODE.SUCCESS:
             print(
@@ -152,14 +141,13 @@ class SVO(object):
 
     def save_point_cloud(
         self,
-        path: str,
-        format: str = "ply",
-        show_frames: bool = True,
-        detect_objects: bool = True,
-        save_pose: bool = True,
-        frame_start: int = 0,
-        save_measure: list = [],
-        custom_model: bool = False,
+        path: str,  # Path to save the results
+        show_frames: bool = True,  # Whether to show frames while processing or not
+        detect_objects: bool = True,  # Whether to detect objects in the frames or not
+        save_pose: bool = True,  # Whether to save the camera pose in a file or not
+        frame_start: int = 0,  # Set how many frames to skip
+        save_measure: list = [],  # Save custom measures
+        custom_model: bool = False,  # Whether to use a custom model or not
     ) -> None:
         """Saves the whole point cloud"""
         if not self.tracking_enabled:
@@ -169,10 +157,10 @@ class SVO(object):
             self.start_mapping()
 
         if detect_objects and not self.detect_enabled:
-            self.start_detection()
+            self.start_detection(custom=custom_model)
 
         if show_frames:
-            disp = Displayer(1280, 720)
+            self.disp = Displayer(1280, 720)
 
         measures = [sl.Mat() for _ in save_measure]
         points = sl.FusedPointCloud()
@@ -184,11 +172,12 @@ class SVO(object):
         runtime_params = sl.RuntimeParameters(
             measure3D_reference_frame=sl.REFERENCE_FRAME.WORLD,
             sensing_mode=sl.SENSING_MODE.STANDARD,  # https://github.com/stereolabs/zed-ros-wrapper/issues/497#issuecomment-558599922
-            confidence_threshold=25,
+            confidence_threshold=20,
         )
 
         print("\nIniciando processamento.")
         print("Pressione Q para interromper.\n")
+        """
 
         while True:
 
@@ -209,7 +198,9 @@ class SVO(object):
                         self.extract_detection(objects)
 
                     if show_frames:
-                        key = disp.show(img_ if "img_" in locals() else img.get_data())
+                        key = self.disp.show(
+                            img_ if "img_" in locals() else img.get_data()
+                        )
                         if key == ord("q"):
                             print("Processamento interrompido!")
                             cv2.destroyAllWindows()
@@ -230,47 +221,44 @@ class SVO(object):
 
         print("Extraindo nuvem de pontos...")
         self.zed.extract_whole_spatial_map(points)
-        points.save(path + "/points", sl.MESH_FILE_FORMAT.PLY)
+        """
 
-        if detect_objects:
-            np.save(path + "/objects", np.array(self.objects))
+        #if "results" not in os.listdir(path):
+        #    os.mkdir(path + "/results")
 
-        self.plot_point_cloud(path)
+        folder_name = self.svo_path.split("/")[-1].split(".")[0]
+        #if folder_name not in os.listdir(path + "/results"):
+        #    os.mkdir(path + "/results/" + folder_name)
+
+        self.results_path = path + "/results/" + folder_name
+
+        #points.save(self.results_path + "/points", sl.MESH_FILE_FORMAT.PLY)
+
+        #if detect_objects:
+        #    np.save(self.results_path + "/objects", np.array(self.objects))
+
+        self.plot_point_cloud(self.results_path)
 
     def get_custom_objects(self, img_) -> list:
         """Predicts bounding boxes in the img and returns them as a list"""
-        result = inference_detector(self.custom_model, img_)
+        result = self.model.predict(img_)
         objects_in = []
-        for indx in range(len(result)):
-            for box in result[indx]:
-                ax, ay, cx, cy, conf = box
-                if conf < 0.9:
-                    continue
-                bx, by, dx, dy = cx, ay, ax, cy
-                tmp = sl.CustomBoxObjectData()
-                tmp.unique_object_id = sl.generate_unique_id()
-                tmp.probability = conf
-                tmp.label = indx
-                tmp.bounding_box_2d = np.array([[ax, ay], [bx, by], [cx, cy], [dx, dy]])
-                tmp.is_grounded = True
-                objects_in.append(tmp)
-                img_ = self.draw_bbox([ax, ay, cx, cy], img_, indx, conf)
-        return img_, objects_in
 
-    def draw_bbox(self, coords, img, indx, conf):
-        """Draws a bouding box around objects"""
-        ax, ay, cx, cy = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
-        img = cv2.rectangle(img, (ax, ay), (cx, cy), (255, 0, 0), 2)
-        img = cv2.putText(
-            img,
-            self.classes[indx] + f": {conf:.3f}",
-            (ax + 5, ay + 15),
-            cv2.FONT_HERSHEY_COMPLEX,
-            0.5,
-            (255, 0, 0),
-            1,
-        )
-        return img
+        for box, conf, label in result:
+            if conf < 0.8:
+                continue
+            tmp = sl.CustomBoxObjectData()
+            tmp.unique_object_id = sl.generate_unique_id()
+            tmp.probability = conf
+            tmp.label = label
+            tmp.bounding_box_2d = box
+            tmp.is_grounded = True
+            objects_in.append(tmp)
+
+            # Draw the box in the frame
+            img_ = self.disp.draw_bbox(img_, box, conf, self.model.classes[label])
+
+        return img_, objects_in
 
     def is_inside_box(self, point, box) -> bool:
         """Checks if a point is inside a 3D box"""
@@ -300,8 +288,11 @@ class SVO(object):
             print("Filtrando o objeto:", id_, "|", objects[id_]["Label"])
             for idx in range(points_array.shape[0]):
                 point = points_array[idx]
-                if self.is_inside_box(point, box):
-                    valid.append(idx)
+                try:
+                    if self.is_inside_box(point, box):
+                        valid.append(idx)
+                except:
+                    continue
 
         pcl = points.select_by_index(valid)
         return pcl
@@ -319,6 +310,7 @@ class SVO(object):
         if filter:
             print("\nCarregando objetos...")
             objects = np.load(path + "/objects.npy", allow_pickle=True).item()
+            print("Objetos encontrados:", len(objects))
 
             print("\nFiltrando pontos...")
             pcl = self.filter_point_cloud(pcl, objects)
