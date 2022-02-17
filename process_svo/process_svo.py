@@ -1,4 +1,6 @@
 import enum
+import pathlib
+import sys
 
 import cv2
 import numpy as np
@@ -6,6 +8,13 @@ import open3d as o3d
 import pyzed.sl as sl
 
 from .displayer import Displayer
+
+_parentdir = pathlib.Path("../mmdetection/").parent.parent.resolve()
+sys.path.insert(0, str(_parentdir))
+# trunk-ignore(flake8/E402)
+from mmdetection.mmdet.apis import inference_detector, init_detector
+
+sys.path.remove(str(_parentdir))
 
 
 class Resolution(enum.Enum):
@@ -61,7 +70,13 @@ class SVO(object):
         self.coord_system = coord_system
         self.unit_system = unit_system
         self.fps = fps
-        self.custom_model = custom_model
+
+        # Start custom model
+        if custom_model is not None:
+            self.custom_model = init_detector(
+                custom_model["config"], custom_model["check_pnt"], device="cuda:0"
+            )
+            self.classes = self.custom_model.CLASSES
 
         # Configure and open camera
         self.init_params = sl.InitParameters()
@@ -181,20 +196,24 @@ class SVO(object):
 
             if err == sl.ERROR_CODE.SUCCESS:
                 if step >= frame_start:
-                    if show_frames:
-                        self.zed.retrieve_image(img)
-                        key = disp.show(img.get_data())
-                        if key == ord("q"):
-                            print("Processamento interrompido!")
-                            break
+                    self.zed.retrieve_image(img)
 
                     if detect_objects:
                         if custom_model:
-                            objects_in = self.get_custom_objects(img.get_data())
+                            img_, objects_in = self.get_custom_objects(
+                                img.get_data()[:, :, :3].copy()
+                            )
                             self.zed.ingest_custom_box_objects(objects_in)
 
                         self.zed.retrieve_objects(objects, self.detection_parameters_rt)
                         self.extract_detection(objects)
+
+                    if show_frames:
+                        key = disp.show(img_ if "img_" in locals() else img.get_data())
+                        if key == ord("q"):
+                            print("Processamento interrompido!")
+                            cv2.destroyAllWindows()
+                            break
 
                     for i in range(len(save_measure)):
                         self.zed.retrieve_measure(measures[i], save_measure[i])
@@ -218,19 +237,40 @@ class SVO(object):
 
         self.plot_point_cloud(path)
 
-    def get_custom_objects(self, img) -> list:
+    def get_custom_objects(self, img_) -> list:
         """Predicts bounding boxes in the img and returns them as a list"""
-        pred = self.custom_model(img)[0]  # Predictions
+        result = inference_detector(self.custom_model, img_)
         objects_in = []
-        for it in pred:
-            tmp = sl.CustomBoxObjectData()
-            tmp.unique_object_id = sl.generate_unique_id()
-            tmp.probability = it.conf
-            tmp.label = it.class_id
-            tmp.bounding_box_2d = it.bounding_box
-            tmp.is_grounded = True
-            objects_in.append(tmp)
-        return objects_in
+        for indx in range(len(result)):
+            for box in result[indx]:
+                ax, ay, cx, cy, conf = box
+                if conf < 0.9:
+                    continue
+                bx, by, dx, dy = cx, ay, ax, cy
+                tmp = sl.CustomBoxObjectData()
+                tmp.unique_object_id = sl.generate_unique_id()
+                tmp.probability = conf
+                tmp.label = indx
+                tmp.bounding_box_2d = np.array([[ax, ay], [bx, by], [cx, cy], [dx, dy]])
+                tmp.is_grounded = True
+                objects_in.append(tmp)
+                img_ = self.draw_bbox([ax, ay, cx, cy], img_, indx, conf)
+        return img_, objects_in
+
+    def draw_bbox(self, coords, img, indx, conf):
+        """Draws a bouding box around objects"""
+        ax, ay, cx, cy = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+        img = cv2.rectangle(img, (ax, ay), (cx, cy), (255, 0, 0), 2)
+        img = cv2.putText(
+            img,
+            self.classes[indx] + f": {conf:.3f}",
+            (ax + 5, ay + 15),
+            cv2.FONT_HERSHEY_COMPLEX,
+            0.5,
+            (255, 0, 0),
+            1,
+        )
+        return img
 
     def is_inside_box(self, point, box) -> bool:
         """Checks if a point is inside a 3D box"""
@@ -241,12 +281,14 @@ class SVO(object):
             return False
 
         # Check Y
-        if not (min([i[1] for i in box])) <= x <= max([i[1] for i in box]):
+        if not (min([i[1] for i in box])) <= y <= max([i[1] for i in box]):
             return False
 
         # Check Z
-        if not (min([i[2] for i in box])) <= x <= max([i[2] for i in box]):
+        if not (min([i[2] for i in box])) <= z <= max([i[2] for i in box]):
             return False
+
+        return True
 
     def filter_point_cloud(self, points: list, objects: dict):
         """Filters a point cloud to show only selected objects"""
