@@ -70,6 +70,13 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Trunk stuff
+.trunk
+
+# Extra stuff
+.flake8
+.isort.cfg
+
 # Sphinx documentation
 docs/_build/
 
@@ -79,6 +86,7 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*.ipynb
 
 # IPython
 profile_default/
