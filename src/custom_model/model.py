@@ -23,6 +23,10 @@ class Model(object):
         )
         self.classes = self.model.CLASSES
 
+        print("Available classes:")
+        for i, j in enumerate(self.classes):
+            print(i, "-", j)
+
     def predict(self, img):
         """Detects objects in a given image"""
         result = inference_detector(self.model, img)
@@ -31,10 +35,11 @@ class Model(object):
 
         return zip(boxes, confidences, labels)
 
-    def prepare_result(self, result):
-        """Prepare the predictio to be used"""
+    def prepare_result(self, result) -> tuple:
+        """Prepare the predictions to be used"""
         boxes, confs, labels = [], [], []
-        for idx in range(len(result)):
+        # for idx in range(len(result)):
+        for idx in [2, 13]:
             for content in result[idx]:
                 ax, ay, cx, cy, conf = content
                 bx, by, dx, dy = cx, ay, ax, cy

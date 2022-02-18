@@ -7,6 +7,7 @@ import open3d as o3d
 import pyzed.sl as sl
 
 from .custom_model.model import Model
+from .filtrate import filter_point_cloud
 from .view.frame_viewer import Displayer
 
 
@@ -81,7 +82,7 @@ class SVO(object):
         self.open()
 
     def solve_path(self) -> None:
-        idx = self.svo_path[::-1].find("/") - 1
+        idx = self.svo_path[::-1].find("/") + 1
         path = self.svo_path[:-idx]
         if "results" not in os.listdir(path):
             os.mkdir(path + "/results")
@@ -99,7 +100,7 @@ class SVO(object):
             self.mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.HIGH)
         )
         self.mapping_parameters.range_meter = self.mapping_parameters.get_range_preset(
-            sl.MAPPING_RANGE.LONG
+            sl.MAPPING_RANGE.MEDIUM
         )
         self.mapping_parameters.max_memory_usage = 6000  # 6GB
         self.mapping_parameters.map_type = sl.SPATIAL_MAP_TYPE.FUSED_POINT_CLOUD
@@ -122,7 +123,7 @@ class SVO(object):
             print("Rastreamento de posição iniciado!")
             self.tracking_enabled = True
 
-    def start_detection(self, custom: bool = False, threshold: float = 0.8) -> None:
+    def start_detection(self, custom: bool = False, threshold: float = 0.95) -> None:
         """Configure and starts object detection"""
         self.objects = {}
         self.detection_parameters = sl.ObjectDetectionParameters()
@@ -233,8 +234,6 @@ class SVO(object):
 
         self.close()
 
-        self.plot_point_cloud(self.results_path)
-
     def open(self) -> None:
         """Opens the camera"""
         err = self.zed.open(self.init_params)
@@ -270,7 +269,7 @@ class SVO(object):
         objects_in = []
 
         for box, conf, label in result:
-            if conf < 0.95:
+            if conf < 0.99:
                 continue
             tmp = sl.CustomBoxObjectData()
             tmp.unique_object_id = sl.generate_unique_id()
@@ -285,47 +284,10 @@ class SVO(object):
 
         return img_, objects_in
 
-    def is_inside_box(self, point, box) -> bool:
-        """Checks if a point is inside a 3D box"""
-        x, y, z = point
-
-        # Check X
-        if not (min([i[0] for i in box])) <= x <= max([i[0] for i in box]):
-            return False
-
-        # Check Y
-        if not (min([i[1] for i in box])) <= y <= max([i[1] for i in box]):
-            return False
-
-        # Check Z
-        if not (min([i[2] for i in box])) <= z <= max([i[2] for i in box]):
-            return False
-
-        return True
-
-    def filter_point_cloud(self, points: list, objects: dict):
-        """Filters a point cloud to show only selected objects"""
-        valid = []
-        points_array = np.asarray(points.points)
-
-        for id_ in objects:
-            box = objects[id_]["3D Box"]
-            print("Filtrando o objeto:", id_, "|", objects[id_]["Label"])
-            for idx in range(points_array.shape[0]):
-                point = points_array[idx]
-                try:
-                    if self.is_inside_box(point, box):
-                        valid.append(idx)
-                except:
-                    continue
-
-        pcl = points.select_by_index(valid)
-        return pcl
-
-    def plot_point_cloud(self, path: str, filter: bool = True) -> None:
+    def plot_point_cloud(self, filter: bool = True, show_classes: list = []) -> None:
         """Plots a point cloud"""
         print("\nCarregando pontos salvos...")
-        pcl = o3d.io.read_point_cloud(path + "/points.ply")
+        pcl = o3d.io.read_point_cloud(self.results_path + "/points.ply")
         print(pcl)
 
         print("\nRemovendo pontos desnecessários...")
@@ -334,11 +296,13 @@ class SVO(object):
 
         if filter:
             print("\nCarregando objetos...")
-            objects = np.load(path + "/objects.npy", allow_pickle=True).item()
+            objects = np.load(
+                self.results_path + "/objects.npy", allow_pickle=True
+            ).item()
             print("Objetos encontrados:", len(objects))
 
             print("\nFiltrando pontos...")
-            pcl = self.filter_point_cloud(pcl, objects)
+            pcl = filter_point_cloud(pcl, objects, show_classes=show_classes)
 
         print("\nPlotando resultado...")
         mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(

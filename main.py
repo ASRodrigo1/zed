@@ -26,6 +26,11 @@ svo = SVO(
 # Now save the point cloud corresponding to the .svo
 svo.save_point_cloud(custom_model=True)
 
-# We can tell which class we wanna see
+# We can tell which classes we wanna see
+show_classes = [
+    "car",
+    "bench",
+]
 
 # Show the result
+svo.plot_point_cloud(show_classes=show_classes)
