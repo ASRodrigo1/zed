@@ -24,7 +24,7 @@ svo = SVO(
 )
 
 # Now save the point cloud corresponding to the .svo
-svo.save_point_cloud(path, custom_model=True)
+svo.save_point_cloud(custom_model=True)
 
 # We can tell which class we wanna see
 

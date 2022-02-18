@@ -71,20 +71,26 @@ class SVO(object):
         self.init_params = sl.InitParameters()
         self.init_params.camera_resolution = self.resolution.value
         self.init_params.camera_fps = self.fps
+        self.init_params.depth_mode = sl.DEPTH_MODE.ULTRA
         self.init_params.coordinate_system = self.coord_system.value
         self.init_params.coordinate_units = self.unit_system.value
         self.init_params.set_from_svo_file(self.svo_path)
         self.zed = sl.Camera()
-        err = self.zed.open(self.init_params)
 
-        if err != sl.ERROR_CODE.SUCCESS:
-            print("Erro ao abrir a câmera. Verifique os parâmetros!", err)
-            exit(-1)
-        else:
-            print("\nCâmera iniciada!")
-            print("Arquivo aberto:", self.svo_path)
-            print("Resolução:", self.resolution.name)
-            print("FPS:", self.fps, "\n")
+        self.solve_path()
+        self.open()
+
+    def solve_path(self) -> None:
+        idx = self.svo_path[::-1].find("/") - 1
+        path = self.svo_path[:-idx]
+        if "results" not in os.listdir(path):
+            os.mkdir(path + "/results")
+
+        folder_name = self.svo_path.split("/")[-1].split(".")[0]
+        if folder_name not in os.listdir(path + "/results"):
+            os.mkdir(path + "/results/" + folder_name)
+
+        self.results_path = path + "/results/" + folder_name
 
     def start_mapping(self) -> None:
         """Configure and starts spatial mapping module"""
@@ -141,7 +147,6 @@ class SVO(object):
 
     def save_point_cloud(
         self,
-        path: str,  # Path to save the results
         show_frames: bool = True,  # Whether to show frames while processing or not
         detect_objects: bool = True,  # Whether to detect objects in the frames or not
         save_pose: bool = True,  # Whether to save the camera pose in a file or not
@@ -177,7 +182,6 @@ class SVO(object):
 
         print("\nIniciando processamento.")
         print("Pressione Q para interromper.\n")
-        """
 
         while True:
 
@@ -221,23 +225,44 @@ class SVO(object):
 
         print("Extraindo nuvem de pontos...")
         self.zed.extract_whole_spatial_map(points)
-        """
 
-        #if "results" not in os.listdir(path):
-        #    os.mkdir(path + "/results")
+        points.save(self.results_path + "/points", sl.MESH_FILE_FORMAT.PLY)
 
-        folder_name = self.svo_path.split("/")[-1].split(".")[0]
-        #if folder_name not in os.listdir(path + "/results"):
-        #    os.mkdir(path + "/results/" + folder_name)
+        if detect_objects:
+            np.save(self.results_path + "/objects", np.array(self.objects))
 
-        self.results_path = path + "/results/" + folder_name
-
-        #points.save(self.results_path + "/points", sl.MESH_FILE_FORMAT.PLY)
-
-        #if detect_objects:
-        #    np.save(self.results_path + "/objects", np.array(self.objects))
+        self.close()
 
         self.plot_point_cloud(self.results_path)
+
+    def open(self) -> None:
+        """Opens the camera"""
+        err = self.zed.open(self.init_params)
+
+        if err != sl.ERROR_CODE.SUCCESS:
+            print("Erro ao abrir a câmera. Verifique os parâmetros!", err)
+            exit(-1)
+        else:
+            print("\nCâmera iniciada!")
+            print("Arquivo aberto:", self.svo_path)
+            print("Resolução:", self.resolution.name)
+            print("FPS:", self.fps, "\n")
+
+    def close(self) -> None:
+        """Closes camera functions"""
+        if self.tracking_enabled:
+            self.zed.disable_positional_tracking()
+            self.tracking_enabled = False
+
+        if self.detect_enabled:
+            self.zed.disable_object_detection()
+            self.detect_enabled = False
+
+        if self.mapping_enabled:
+            self.zed.disable_spatial_mapping()
+            self.mapping_enabled = False
+
+        self.zed.close()
 
     def get_custom_objects(self, img_) -> list:
         """Predicts bounding boxes in the img and returns them as a list"""
@@ -245,7 +270,7 @@ class SVO(object):
         objects_in = []
 
         for box, conf, label in result:
-            if conf < 0.8:
+            if conf < 0.95:
                 continue
             tmp = sl.CustomBoxObjectData()
             tmp.unique_object_id = sl.generate_unique_id()
